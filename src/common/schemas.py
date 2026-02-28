@@ -12,7 +12,7 @@ class EpisodeLog:
     state_hash: str
     prompt: str
     raw_output: str
-    parsed_bid: int
+    parsed_action: Dict[str, Any]
     legal: bool
     reward_delta: float
     bankroll_after: float

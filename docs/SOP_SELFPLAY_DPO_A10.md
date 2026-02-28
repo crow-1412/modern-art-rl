@@ -33,7 +33,6 @@ python3 -c "import torch, transformers, trl, peft, datasets, bitsandbytes; print
 ```bash
 PYTHONPATH=. python3 src/data/generate_selfplay.py \
   --episodes 20 \
-  --rounds 8 \
   --agent heuristic \
   --out data/raw/episode_logs_smoke.jsonl
 ```
@@ -42,7 +41,6 @@ PYTHONPATH=. python3 src/data/generate_selfplay.py \
 ```bash
 PYTHONPATH=. python3 src/data/generate_selfplay.py \
   --episodes 2000 \
-  --rounds 12 \
   --agent llm \
   --model-path /root/Qwen3-8B \
   --out data/raw/episode_logs_main.jsonl
@@ -124,3 +122,10 @@ Acceptance:
 # If needed, restore online inference container
 docker start next-edit
 ```
+
+## 9. No-talk UI (optional)
+```bash
+make gen-assets
+make ui
+```
+Open `http://localhost:8000`.

@@ -4,12 +4,12 @@ import json
 import random
 import re
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict
 
 
 @dataclass
 class AgentDecision:
-    bid: int
+    action: Dict[str, int]
     raw_output: str
     legal: bool
 
@@ -20,16 +20,35 @@ class BaseAgent:
 
 
 class HeuristicAgent(BaseAgent):
-    def __init__(self, aggression: float = 0.8):
+    def __init__(self, aggression: float = 0.8, seed: int = 0):
         self.aggression = aggression
+        self.rng = random.Random(seed)
+
+    def _pick_insert_index(self, obs: Dict, target_artist: str) -> int:
+        for i, card in enumerate(obs.get("hand", [])):
+            if card["artist"] == target_artist and card["auction_type"] != "double":
+                return i
+        return -1
 
     def act(self, obs: Dict, min_bid: int, max_bid: int, seat_id: str) -> AgentDecision:
-        estimate = float(obs["public_estimate"])
-        bankroll = float(obs["bankroll"])
-        target = int(min(estimate * self.aggression, bankroll))
-        bid = min(max(target, min_bid), max_bid)
-        raw = json.dumps({"bid": bid, "reason": "heuristic"}, ensure_ascii=True)
-        return AgentDecision(bid=bid, raw_output=raw, legal=True)
+        bankroll = float(obs["cash"])
+        hand = obs.get("hand", [])
+        play_idx = 0 if hand else -1
+        price = int(min(max_bid, bankroll * 0.6))
+        bid = int(min(max_bid, bankroll * self.aggression))
+
+        # Opportunistically prepare a legal insert candidate for double auctions.
+        target_artist = hand[play_idx]["artist"] if hand and play_idx >= 0 else ""
+        insert_idx = self._pick_insert_index(obs, target_artist)
+
+        action = {
+            "play_card_index": play_idx,
+            "price": max(0, price),
+            "bid": max(0, bid),
+            "insert_card_index": insert_idx,
+        }
+        raw = json.dumps({"action": action, "reason": "heuristic"}, ensure_ascii=True)
+        return AgentDecision(action=action, raw_output=raw, legal=True)
 
 
 class RandomAgent(BaseAgent):
@@ -37,9 +56,16 @@ class RandomAgent(BaseAgent):
         self.rng = random.Random(seed)
 
     def act(self, obs: Dict, min_bid: int, max_bid: int, seat_id: str) -> AgentDecision:
-        bid = self.rng.randint(min_bid, max_bid)
-        raw = json.dumps({"bid": bid, "reason": "random"}, ensure_ascii=True)
-        return AgentDecision(bid=bid, raw_output=raw, legal=True)
+        hand = obs.get("hand", [])
+        play_idx = self.rng.randint(0, max(0, len(hand) - 1)) if hand else -1
+        action = {
+            "play_card_index": play_idx,
+            "price": self.rng.randint(min_bid, max_bid),
+            "bid": self.rng.randint(min_bid, max_bid),
+            "insert_card_index": -1,
+        }
+        raw = json.dumps({"action": action, "reason": "random"}, ensure_ascii=True)
+        return AgentDecision(action=action, raw_output=raw, legal=True)
 
 
 class LLMSeatAgent(BaseAgent):
@@ -48,7 +74,7 @@ class LLMSeatAgent(BaseAgent):
     def __init__(
         self,
         model_path: str,
-        max_new_tokens: int = 96,
+        max_new_tokens: int = 160,
         temperature: float = 0.0,
         dtype: str = "bfloat16",
         load_in_4bit: bool = False,
@@ -93,36 +119,69 @@ class LLMSeatAgent(BaseAgent):
     @staticmethod
     def _prompt(obs: Dict, min_bid: int, max_bid: int, seat_id: str) -> str:
         policy = (
-            "You are an auction agent. Return valid JSON only with keys: bid, reasoning. "
-            "Bid must be an integer in legal range."
+            "You are a Modern-Art auction player. Output strict JSON only with keys "
+            "play_card_index, price, bid, insert_card_index, reasoning."
         )
         payload = {
             "seat_id": seat_id,
             "observation": obs,
-            "legal_bid_range": [min_bid, max_bid],
-            "task": "Choose one sealed bid for this round.",
+            "constraints": {
+                "bid_min": min_bid,
+                "bid_max": max_bid,
+                "fixed_price_must_not_exceed_cash": True,
+                "insert_card_must_match_artist_and_non_double": True,
+            },
         }
-        return f"{policy}\nInput: {json.dumps(payload, ensure_ascii=True)}\nOutput:"  # ASCII-only payload
+        return f"{policy}\nInput: {json.dumps(payload, ensure_ascii=True)}\nOutput:"  # ASCII payload
 
     @staticmethod
-    def _extract_bid(text: str, min_bid: int, max_bid: int) -> int:
+    def _extract_int(obj: Dict[str, Any], key: str, default: int) -> int:
         try:
-            obj = json.loads(text)
-            if isinstance(obj, dict) and "bid" in obj:
-                return int(obj["bid"])
+            return int(obj.get(key, default))
         except Exception:
-            pass
-        # Fallback: first integer in output
-        match = re.search(r"-?\d+", text)
-        if not match:
-            return min_bid
-        bid = int(match.group(0))
-        return min(max(bid, min_bid), max_bid)
+            return default
+
+    def _extract_action(self, text: str, min_bid: int, max_bid: int, hand_size: int) -> Dict[str, int]:
+        parsed: Dict[str, Any] = {}
+        try:
+            maybe = json.loads(text)
+            if isinstance(maybe, dict):
+                parsed = maybe
+                if "action" in maybe and isinstance(maybe["action"], dict):
+                    parsed = maybe["action"]
+        except Exception:
+            # fallback: first number as bid
+            match = re.search(r"-?\d+", text)
+            bid = int(match.group(0)) if match else 0
+            return {
+                "play_card_index": 0 if hand_size > 0 else -1,
+                "price": max(0, min(max_bid, bid)),
+                "bid": max(0, min(max_bid, bid)),
+                "insert_card_index": -1,
+            }
+
+        play_idx = self._extract_int(parsed, "play_card_index", 0 if hand_size > 0 else -1)
+        if hand_size == 0:
+            play_idx = -1
+        else:
+            play_idx = min(max(play_idx, 0), hand_size - 1)
+
+        price = max(0, min(max_bid, self._extract_int(parsed, "price", 0)))
+        bid = max(0, min(max_bid, self._extract_int(parsed, "bid", 0)))
+        insert_idx = self._extract_int(parsed, "insert_card_index", -1)
+        if insert_idx >= hand_size:
+            insert_idx = -1
+
+        return {
+            "play_card_index": play_idx,
+            "price": price,
+            "bid": bid,
+            "insert_card_index": insert_idx,
+        }
 
     def act(self, obs: Dict, min_bid: int, max_bid: int, seat_id: str) -> AgentDecision:
         self._lazy_load()
         prompt = self._prompt(obs, min_bid, max_bid, seat_id)
-
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
         outputs = self._model.generate(
             **inputs,
@@ -132,9 +191,9 @@ class LLMSeatAgent(BaseAgent):
         )
         full_text = self._tokenizer.decode(outputs[0], skip_special_tokens=True)
         raw_output = full_text[len(prompt) :].strip() if full_text.startswith(prompt) else full_text
-        bid = self._extract_bid(raw_output, min_bid=min_bid, max_bid=max_bid)
-        legal = min_bid <= bid <= max_bid
-        return AgentDecision(bid=bid, raw_output=raw_output, legal=legal)
+        action = self._extract_action(raw_output, min_bid, max_bid, hand_size=int(obs.get("hand_size", 0)))
+        legal = True
+        return AgentDecision(action=action, raw_output=raw_output, legal=legal)
 
     def build_prompt(self, obs: Dict, min_bid: int, max_bid: int, seat_id: str) -> str:
         return self._prompt(obs, min_bid, max_bid, seat_id)

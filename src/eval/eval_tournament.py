@@ -27,19 +27,18 @@ def main() -> None:
     parser.add_argument("--model-path-a", default="")
     parser.add_argument("--model-path-b", default="")
     parser.add_argument("--num-games", type=int, default=200)
-    parser.add_argument("--rounds", type=int, default=12)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--report-path", required=True)
     args = parser.parse_args()
 
-    env = AuctionEnv(total_rounds=args.rounds)
+    env = AuctionEnv()
     agent_a = build_policy(args.policy_a, args.model_path_a or None)
     agent_b = build_policy(args.policy_b, args.model_path_b or None)
     bot_c = HeuristicAgent(aggression=0.6)
     bot_d = HeuristicAgent(aggression=0.95)
 
     wins = {"seat_0": 0, "seat_1": 0, "seat_2": 0, "seat_3": 0}
-    bankroll_sum = {k: 0.0 for k in wins}
+    cash_sum = {k: 0.0 for k in wins}
 
     for game_idx in range(args.num_games):
         obs = env.reset(seed=args.seed + game_idx)
@@ -54,18 +53,18 @@ def main() -> None:
             }.items():
                 spec = env.legal_actions(seat_id, obs[seat_id])[0]
                 dec = agent.act(obs[seat_id], spec.min_bid, spec.max_bid, seat_id)
-                actions[seat_id] = dec.bid
+                actions[seat_id] = dec.action
             obs, _rewards, done, info = env.step(actions)
 
-        final_bankrolls = info["final_bankrolls"]
-        winner = max(final_bankrolls, key=lambda k: final_bankrolls[k])
+        final_cash = info["final_cash"]
+        winner = max(final_cash, key=lambda k: final_cash[k])
         wins[winner] += 1
-        for k, v in final_bankrolls.items():
-            bankroll_sum[k] += v
+        for k, v in final_cash.items():
+            cash_sum[k] += v
 
     report = {
         "num_games": args.num_games,
-        "avg_bankroll": {k: bankroll_sum[k] / args.num_games for k in bankroll_sum},
+        "avg_cash": {k: cash_sum[k] / args.num_games for k in cash_sum},
         "wins": wins,
         "win_rate": {k: wins[k] / args.num_games for k in wins},
         "mapping": {

@@ -10,7 +10,7 @@ Required fields:
 - `state_hash` (string): hash of public state
 - `prompt` (string): model input prompt
 - `raw_output` (string): model output text
-- `parsed_bid` (int)
+- `parsed_action` (object): `play_card_index`, `price`, `bid`, `insert_card_index`
 - `legal` (bool)
 - `reward_delta` (float)
 - `bankroll_after` (float)

@@ -14,8 +14,21 @@ Single-GPU (A10 24GB) workflow for 4-player self-play data generation and DPO fi
 ## Project layout
 
 - `docs/`: environment audit, SOP, schemas
-- `src/env/`: sealed-bid auction environment
+- `src/env/`: Modern Art style no-talk auction environment
 - `src/agent/`: LLM and baseline agents
 - `src/data/`: self-play rollouts and pair building
 - `src/train/`: DPO training entrypoint
 - `src/eval/`: tournament evaluation
+- `src/frontend/`: FastAPI viewer backend
+- `web/static/`: frontend page
+
+## No-talk mode
+
+The environment hides opponent cash in per-seat observations and exposes no communication channel.
+
+## Visual UI
+
+```bash
+make gen-assets    # use .env image model endpoint when available, with placeholder fallback
+make ui            # open http://localhost:8000
+```
